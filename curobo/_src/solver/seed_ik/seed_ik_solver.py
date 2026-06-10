@@ -79,12 +79,22 @@ class SeedIKSolver:
         self._goal_tool_poses_buffer: Optional[GoalToolPose] = None
         # Create robot model with jacobian computation enabled
         robot_model_config = config.robot_config.kinematics
+        # cuTAMP fork: the CoM residual reads robot_com from this model's FK;
+        # compute_com is a construction-time kernel-template flag (default off
+        # upstream — robot_com would be allocated but zeros).
         self._robot_model = Kinematics(
-            robot_model_config, compute_spheres=False, compute_jacobian=True
+            robot_model_config,
+            compute_spheres=False,
+            compute_jacobian=True,
+            compute_com=config.com_support_weight > 0.0,
         )
         self._aux_robot_model = Kinematics(
             robot_model_config, compute_spheres=False, compute_jacobian=False
         )
+        # cuTAMP fork: the CoM residual derives jTerror from the autograd
+        # backward path; the analytical path does not include it.
+        if config.com_support_weight > 0.0 and not config.use_backward:
+            log_and_raise("com_support_weight > 0 requires use_backward=True")
 
         # Store robot properties
         self.dof = self._robot_model.get_dof()
