@@ -161,7 +161,20 @@ class IKSolver:
                     orientation_weight=self.config.seed_orientation_weight,
                     velocity_weight=self.config.seed_velocity_weight,
                     acceleration_weight=self.config.seed_acceleration_weight,
+                    # --- cuTAMP fork: pass-through for the seed-IK CoM residual
+                    com_support_weight=self.config.seed_com_support_weight,
+                    com_half_extents=self.config.seed_com_half_extents,
+                    com_inside_margin=self.config.seed_com_inside_margin,
+                    com_inside_weight=self.config.seed_com_inside_weight,
+                    com_center_weight=self.config.seed_com_center_weight,
+                    com_base_link_name=self.config.seed_com_base_link_name,
                 )
+            )
+        # cuTAMP fork: the CoM residual lives in the seed-IK stage only.
+        elif self.config.seed_com_support_weight > 0.0:
+            log_and_raise(
+                "seed_com_support_weight > 0 requires use_lm_seed=True "
+                "(the CoM residual lives in the seed-IK LM stage)"
             )
 
     # -------------------------------------------------------------------
