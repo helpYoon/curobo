@@ -91,6 +91,19 @@ class IKSolverCfg:
     seed_acceleration_weight: float = 0.0
     #: Number of seeds used by the seed Levenberg-Marquardt solver.
     seed_solver_num_seeds: int = 32
+    # --- cuTAMP fork: pass-through for the seed-IK CoM residual ------------
+    #: Weight of the seed-IK CoM-over-support-rectangle residual; 0 disables (cuTAMP fork).
+    seed_com_support_weight: float = 0.0
+    #: Support rectangle half-extents (x, y) in meters, in seed_com_base_link_name frame (cuTAMP fork).
+    seed_com_half_extents: Optional[List[float]] = None
+    #: Width of the inside-edge soft-barrier band in meters (cuTAMP fork).
+    seed_com_inside_margin: float = 0.02
+    #: Scale of the inside-barrier term relative to the outside quadratic (cuTAMP fork).
+    seed_com_inside_weight: float = 1.0
+    #: Scale of the optional pull-to-center term; 0 disables (cuTAMP fork).
+    seed_com_center_weight: float = 0.0
+    #: Tool frame whose pose defines the support-rectangle's local frame; must be a member of kinematics tool_frames (cuTAMP fork).
+    seed_com_base_link_name: str = "mobile_base_link"
     #: Whether to enable self-collision checking during optimization.
     self_collision_check: bool = True
 
@@ -166,6 +179,13 @@ class IKSolverCfg:
         seed_velocity_weight: float = 0.0,
         seed_acceleration_weight: float = 0.0,
         seed_solver_num_seeds: int = 32,
+        # --- cuTAMP fork: pass-through for the seed-IK CoM residual --------
+        seed_com_support_weight: float = 0.0,
+        seed_com_half_extents: Optional[List[float]] = None,
+        seed_com_inside_margin: float = 0.02,
+        seed_com_inside_weight: float = 1.0,
+        seed_com_center_weight: float = 0.0,
+        seed_com_base_link_name: str = "mobile_base_link",
         max_batch_size: int = 1,
         multi_env: bool = False,
         max_goalset: int = 1,
@@ -211,6 +231,19 @@ class IKSolverCfg:
             seed_velocity_weight: Velocity regularization weight for the seed LM solver.
             seed_acceleration_weight: Acceleration regularization weight for the seed LM solver.
             seed_solver_num_seeds: Number of seeds for the seed LM solver.
+            seed_com_support_weight: Weight of the seed-IK CoM-over-support-rectangle residual;
+                0.0 disables the residual entirely and keeps the solver byte-identical to
+                upstream (cuTAMP fork).
+            seed_com_half_extents: Support rectangle half-extents (x, y) in meters, expressed
+                in the seed_com_base_link_name frame (cuTAMP fork).
+            seed_com_inside_margin: Width of the inside-edge soft-barrier band in meters;
+                controls how quickly the barrier activates near the edge (cuTAMP fork).
+            seed_com_inside_weight: Scale of the inside-barrier term relative to the outside
+                quadratic penalty (cuTAMP fork).
+            seed_com_center_weight: Scale of an optional pull-to-center term; 0 disables
+                (cuTAMP fork).
+            seed_com_base_link_name: Name of the link whose pose defines the support-rectangle's
+                local frame; must appear in the robot's tool_frames (cuTAMP fork).
             max_batch_size: Maximum number of problems solved in parallel.
             multi_env: When True, each batched problem uses its own collision environment.
             max_goalset: Maximum goalset size per problem.
@@ -282,5 +315,12 @@ class IKSolverCfg:
             seed_velocity_weight=seed_velocity_weight,
             seed_acceleration_weight=seed_acceleration_weight,
             seed_solver_num_seeds=seed_solver_num_seeds,
+            # --- cuTAMP fork: pass-through for the seed-IK CoM residual ----
+            seed_com_support_weight=seed_com_support_weight,
+            seed_com_half_extents=seed_com_half_extents,
+            seed_com_inside_margin=seed_com_inside_margin,
+            seed_com_inside_weight=seed_com_inside_weight,
+            seed_com_center_weight=seed_com_center_weight,
+            seed_com_base_link_name=seed_com_base_link_name,
             self_collision_check=self_collision_check,
         )
