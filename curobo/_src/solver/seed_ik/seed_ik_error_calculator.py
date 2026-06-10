@@ -35,6 +35,44 @@ from curobo._src.util.logging import log_and_raise, log_info
 from curobo._src.util.torch_util import get_torch_jit_decorator
 
 
+def com_support_penalty(
+    com_world: torch.Tensor,
+    base_position: torch.Tensor,
+    base_quaternion: torch.Tensor,
+    half_extents: torch.Tensor,
+    inside_margin: float,
+    inside_weight: float,
+    center_weight: float,
+) -> torch.Tensor:
+    """CoM-over-support-rectangle penalty.
+    Outside-quadratic + inside-margin max-over-axes barrier + optional pull-to-center. 
+    Branch-free tensor math except host-constant scalars (CUDA-graph capture safe).
+
+    Args:
+        com_world: [B, 3] world-frame robot CoM.
+        base_position: [B, 3] world position of the rectangle's base link.
+        base_quaternion: [B, 4] wxyz world orientation of the base link.
+        half_extents: [2] rectangle half-sizes (x, y) in the base frame.
+        inside_margin: width of the inside soft-barrier band (meters).
+        inside_weight: inside-barrier scale vs the outside quadratic.
+        center_weight: optional pull-to-center scale; 0 disables.
+    """
+    v = com_world - base_position
+    w = base_quaternion[:, 0:1]
+    u = base_quaternion[:, 1:4]
+    # Rotate v by the conjugate quaternion (world -> base frame):
+    # R(q)^T v = v + 2*(u x (u x v) - w*(u x v)).
+    t = torch.cross(u, v, dim=-1)
+    com_in_base = (v + 2.0 * (torch.cross(u, t, dim=-1) - w * t))[:, :2]
+    offset = com_in_base.abs() - half_extents
+    outside = torch.clamp(offset, min=0.0)
+    inside = torch.clamp(offset + inside_margin, min=0.0)
+    penalty = (outside ** 2).sum(dim=-1) + inside_weight * (inside ** 2).max(dim=-1).values
+    if center_weight > 0.0:
+        penalty = penalty + center_weight * ((com_in_base / half_extents) ** 2).sum(dim=-1)
+    return penalty
+
+
 @dataclass
 class ErrorJacobianResult:
     """Container for error and jacobian calculation results."""
@@ -67,6 +105,27 @@ class SeedIKErrorCalculator:
         # Setup pose cost function internally
         self.pose_cost = self._setup_cost_function()
 
+        # CoM-over-support-rectangle residual (rhs-only).
+        self._com_enabled = getattr(config, "com_support_weight", 0.0) > 0.0
+        self._com_ones = None
+        if self._com_enabled:
+            if config.com_half_extents is None:
+                log_and_raise("com_support_weight > 0 requires com_half_extents")
+            if any(h <= 0.0 for h in config.com_half_extents):
+                log_and_raise(f"com_half_extents must be positive, got {config.com_half_extents}")
+            if config.com_base_link_name not in robot_model.tool_frames:
+                log_and_raise(
+                    f"com_base_link_name {config.com_base_link_name!r} not in "
+                    f"tool_frames {list(robot_model.tool_frames)}"
+                )
+            self._com_base_idx = list(robot_model.tool_frames).index(
+                config.com_base_link_name
+            )
+            self._com_half = torch.tensor(
+                config.com_half_extents, dtype=torch.float32,
+                device=device_cfg.device,
+            )
+
         # Cache for cost_shape tensors based on batch_size
         self._cost_shape_cache = {}
 
@@ -98,6 +157,12 @@ class SeedIKErrorCalculator:
                 dtype=torch.float32,
                 device=self.device_cfg.device,
             )
+            # CoM residual backward-gradient tensor.
+            if self._com_enabled:
+                self._com_ones = torch.ones(
+                    (self._num_problems,), dtype=torch.float32,
+                    device=self.device_cfg.device,
+                )
             self.pose_cost.setup_batch_tensors(self._num_problems, 1)
 
 
@@ -268,8 +333,15 @@ class SeedIKErrorCalculator:
             idxs_goal=idxs_goal,
         )
 
-        # Trigger backward pass
-        cost.backward(cost_shape)
+        # Trigger backward pass: when the CoM residual is enabled,
+        # one COMBINED backward over [pose, CoM] populates joint_position.grad
+        # with both contributions (a second separate backward would hit a freed
+        # graph / alias the fused-kinematics grad buffers).
+        if self._com_enabled:
+            com_cost = self._compute_com_penalty(kin_state, num_problems)
+            torch.autograd.backward([cost, com_cost], [cost_shape, self._com_ones])
+        else:
+            cost.backward(cost_shape)
 
         # Get jacobian from kinematics
         jacobian = kin_state.tool_jacobians.view(batch_size, -1, self.dof).detach()
@@ -278,6 +350,9 @@ class SeedIKErrorCalculator:
         position_errors, orientation_errors, error_norm = self._reduce_pose_errors(
             linear_distance, angular_distance, cost, batch_size
         )
+        if self._com_enabled:
+            # error_norm feeds LM trust-ratio/acceptance; success stays pose-only.
+            error_norm = error_norm + com_cost.detach()
 
         # Compute jacobian transpose times error
         if self.config.use_backward:
@@ -286,6 +361,24 @@ class SeedIKErrorCalculator:
             jTerror = self._compute_analytical_pose_jTerror(current_poses, jacobian, batch_size)
 
         return jTerror, jacobian, position_errors, orientation_errors, error_norm
+
+    @profiler.record_function("seed_ik_error_calculator/compute_com_penalty")
+    def _compute_com_penalty(self, kin_state, batch_size: int) -> torch.Tensor:
+        """Weighted CoM residual scalar per problem, [batch_size] (cuTAMP fork)."""
+        cfg = self.config
+        com_world = kin_state.robot_com.view(batch_size, -1)[:, :3]
+        positions = kin_state.tool_poses.position.view(batch_size, self.num_links, 3)
+        quaternions = kin_state.tool_poses.quaternion.view(batch_size, self.num_links, 4)
+        penalty = com_support_penalty(
+            com_world,
+            positions[:, self._com_base_idx, :],
+            quaternions[:, self._com_base_idx, :],
+            self._com_half,
+            cfg.com_inside_margin,
+            cfg.com_inside_weight,
+            cfg.com_center_weight,
+        )
+        return cfg.com_support_weight * penalty
 
     @profiler.record_function("seed_ik_error_calculator/reduce_pose_errors")
     @get_torch_jit_decorator(only_valid_for_compile=True)
