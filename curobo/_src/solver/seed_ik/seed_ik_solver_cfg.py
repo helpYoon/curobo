@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Union
+from typing import Dict, List, Optional, Union
 
 from curobo._src.types.device_cfg import DeviceCfg
 from curobo._src.types.robot import RobotCfg
@@ -96,6 +96,22 @@ class SeedIKSolverCfg:
     provides velocity and dt, adds a residual penalising implied acceleration
     ``a = ((q - q_current)/dt - v_current) / dt``. Disabled when velocity is
     not available on current_state."""
+
+    # --- cuTAMP fork: CoM-over-support-rectangle residual (rhs-only) -------
+    # See cuTAMP docs/superpowers/specs/2026-06-09-com-aware-ik-design.md.
+    # Default 0.0 keeps the solver byte-identical to upstream.
+    com_support_weight: float = 0.0
+    """Weight of the CoM-over-support-rectangle residual; 0 disables (default)."""
+    com_half_extents: Optional[List[float]] = None
+    """Support rectangle half-extents (x, y), meters, in com_base_link_name frame."""
+    com_inside_margin: float = 0.02
+    """Inside-edge soft-barrier band width, meters."""
+    com_inside_weight: float = 1.0
+    """Inside-barrier scale vs the outside quadratic."""
+    com_center_weight: float = 0.0
+    """Optional pull-to-center term scale; 0 disables."""
+    com_base_link_name: str = "mobile_base_link"
+    """Tool frame whose pose defines the rectangle's local frame (must be in tool_frames)."""
 
     @staticmethod
     def create(
