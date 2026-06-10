@@ -47,7 +47,14 @@ class RobotStateTransition:
         self.batch_size = self.config.batch_size
         self.interpolation_steps = self.config.interpolation_steps
         self.dt = self.config.dt_traj_params.base_dt
-        self.robot_model = Kinematics(self.config.robot_config.kinematics, compute_jacobian=False)
+        # cuTAMP local addition: compute_com is plumbed through the cfg
+        # (RobotStateTransitionCfg.compute_com) so cuTAMP's COM-over-base
+        # cost can read state.robot_com. Default False keeps upstream behavior.
+        self.robot_model = Kinematics(
+            self.config.robot_config.kinematics,
+            compute_jacobian=False,
+            compute_com=self.config.compute_com,
+        )
         # update cspace to store joint names in the order given by robot model:
         self.num_dof = self.robot_model.get_dof()
         self.robot_dynamics = None
