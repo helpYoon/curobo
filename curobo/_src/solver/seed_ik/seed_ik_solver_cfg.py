@@ -98,7 +98,6 @@ class SeedIKSolverCfg:
     not available on current_state."""
 
     # --- cuTAMP fork: CoM-over-support-rectangle residual (rhs-only) -------
-    # See cuTAMP docs/superpowers/specs/2026-06-09-com-aware-ik-design.md.
     # Default 0.0 keeps the solver byte-identical to upstream.
     com_support_weight: float = 0.0
     """Weight of the CoM-over-support-rectangle residual; 0 disables (default)."""
