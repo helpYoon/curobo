@@ -114,7 +114,11 @@ class SeedIterationStateManager:
         return SeedIKState(
             joint_position=selected_values.joint_position,
             lambda_damping=updated_damping,
-            error_norm=candidate_state.error_norm,
+            error_norm=torch.where(
+                step_accepted.view(-1),
+                candidate_state.error_norm,
+                current_state.error_norm,
+            ),
             success=convergence_status,
             improvement=step_accepted,
             position_errors=selected_values.position_errors,
@@ -257,4 +261,3 @@ class SeedIterationStateManager:
             joint_position < self.action_max,
         )
         return torch.all(within_limits, dim=-1)
-

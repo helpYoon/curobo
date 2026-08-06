@@ -352,6 +352,26 @@ class TestSeedIterationStateManagerUpdateState:
         assert updated.success is not None
         assert updated.improvement is not None
 
+    def test_update_iteration_state_keeps_current_error_on_rejection(
+        self, state_manager, sample_current_state, sample_candidate_state
+    ):
+        predicted_reduction = torch.tensor([[0.5], [0.5], [0.5], [0.2]])
+
+        updated = state_manager.update_iteration_state(
+            sample_current_state,
+            sample_candidate_state,
+            predicted_reduction,
+            batch_size=4,
+        )
+
+        # Ratios are [1, -1, 1, 1], so only row 1 is rejected.
+        expected = torch.tensor([0.5, 2.0, 1.0, 0.3])
+        assert torch.equal(updated.error_norm, expected)
+        assert torch.equal(updated.joint_position[1], sample_current_state.joint_position[1])
+        assert torch.equal(updated.jTerror[1], sample_current_state.jTerror[1])
+        assert torch.equal(updated.jacobian[1], sample_current_state.jacobian[1])
+        assert torch.equal(updated.joint_position[0], sample_candidate_state.joint_position[0])
+
 
 class TestSeedIterationStateManagerCUDA:
     """Test SeedIterationStateManager with CUDA tensors."""
@@ -382,4 +402,3 @@ class TestSeedIterationStateManagerCUDA:
         ratio = manager._calculate_trust_region_ratio(old_error, new_error, predicted, 1)
 
         assert ratio.is_cuda
-
