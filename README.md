@@ -17,8 +17,9 @@
 > opt-in **center-of-mass (CoM) safety term to inverse kinematics** for the Booster
 > T1 humanoid. The fork is based on upstream
 > [`ac5f931`](https://github.com/NVlabs/curobo/commit/ac5f931) (NVlabs PR #678).
-> All additions default **off**, so an unconfigured solver is byte-identical to
-> upstream. See [Fork changes](#fork-cutamp-com-aware-ik) below.
+> The CoM additions default **off**; the only always-on change is a thread-safety
+> fix for warp stream wrappers, which does not change results. See
+> [Fork changes](#fork-cutamp-com-aware-ik) below.
 
 cuRobo is a CUDA-accelerated library for robot motion generation, built on
 PyTorch, CUDA, and Warp. It provides GPU-parallel algorithms for
@@ -40,7 +41,7 @@ its support footprint (otherwise the robot tips). It is the load-bearing change
 for cuTAMP's Booster T1 humanoid.
 
 **Base:** upstream `ac5f931` (NVlabs PR #678). The fork carries **no CUDA/kernel
-changes**. Every edit below is pure Python on the config/solver path.
+changes**. Every edit below is pure Python.
 
 ### What it does
 
@@ -57,7 +58,7 @@ allocated but zero). This fork:
    the main IK solver is fused CUDA and bypasses Python costs — so the residual
    lives there and feeds the LM step via a single combined `autograd.backward`.
 
-### Files changed (7)
+### Files changed (8)
 
 | File | Change |
 | --- | --- |
@@ -68,6 +69,7 @@ allocated but zero). This fork:
 | `curobo/_src/solver/solver_ik_cfg.py` | Six public `seed_com_*` fields + `create()` plumbing — the surface cuTAMP sets. |
 | `curobo/_src/transition/robot_state_transition.py` | Passes `compute_com` to the planner's transition `Kinematics` (a separate instance from the seed-IK model). |
 | `curobo/_src/transition/robot_state_transition_cfg.py` | Adds the `compute_com: bool = False` field. |
+| `curobo/_src/util/warp.py` | Always on: `get_warp_device_stream` reuses one `wp.Stream` per (device, CUstream) instead of creating one per launch. warp's global stream registry is unlocked, so per-launch wrappers from two threads (cuTAMP's planner-warmup thread + main thread) corrupt the heap. |
 
 ### Config knobs (all default to upstream-equivalent values)
 

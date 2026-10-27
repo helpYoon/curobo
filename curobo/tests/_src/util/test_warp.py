@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 # Third Party
 import pytest
+import torch
 
 # CuRobo
 
@@ -99,4 +100,22 @@ class TestWarp:
             assert result is False
         except ImportError:
             pytest.skip("Warp not installed")
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_get_warp_device_stream_reuses_wrapper(self):
+        # cuTAMP fork: a fresh wp.Stream per call registers + unregisters the handle in
+        # warp's unlocked global stream map; two threads doing that corrupt the heap.
+        # CuRobo
+        from curobo._src.util.warp import get_warp_device_stream, init_warp
+
+        init_warp(quiet=True)
+        device = torch.device("cuda:0")
+        side = torch.cuda.Stream(device=device)
+        with torch.cuda.stream(side):
+            _, first = get_warp_device_stream(device)
+            _, second = get_warp_device_stream(torch.zeros(1, device=device))
+        _, default = get_warp_device_stream(device)
+        assert first is second
+        assert first.cuda_stream == side.cuda_stream
+        assert default is not first
 

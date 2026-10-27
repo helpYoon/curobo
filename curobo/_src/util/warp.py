@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Callable
 from typing import Any, Optional, Tuple, Union
 
@@ -130,6 +131,26 @@ def warp_support_bvh_constructor_type(wp_module=None):
     return True
 
 
+# cuTAMP fork: one wp.Stream wrapper per (device, CUstream), created once and kept.
+# wp.stream_from_torch registers the handle in warp's global stream map and the
+# wrapper's __del__ unregisters it. That map has no lock (warp 1.10.1, warp.cu:251)
+# and ctypes drops the GIL, so a fresh wrapper per launch from two threads (cuTAMP's
+# planner-warmup thread + main thread) corrupts the heap. Kept wrappers never erase.
+# ponytail: never evicted; grows with distinct streams (torch's pool is ~32/device).
+_WARP_STREAMS: dict = {}
+_WARP_STREAMS_LOCK = threading.Lock()
+
+
+def _warp_stream_from_torch(pt_stream: torch.cuda.Stream) -> wp.Stream:
+    key = (pt_stream.device_index, pt_stream.cuda_stream)
+    stream = _WARP_STREAMS.get(key)
+    if stream is None:
+        with _WARP_STREAMS_LOCK:
+            stream = _WARP_STREAMS.get(key)
+            if stream is None:
+                stream = _WARP_STREAMS[key] = wp.stream_from_torch(pt_stream)
+    return stream
+
 
 def get_warp_device_stream(
     tensor_or_device: Union[torch.Tensor, torch.device],
@@ -161,7 +182,7 @@ def get_warp_device_stream(
     wp_device = wp.device_from_torch(torch_device)
     if is_cuda:
         pt_stream = torch.cuda.current_stream(torch_device)
-        stream = wp.stream_from_torch(pt_stream)
+        stream = _warp_stream_from_torch(pt_stream)
     else:
         stream = None
     return wp_device, stream
