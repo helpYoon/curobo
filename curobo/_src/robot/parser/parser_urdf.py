@@ -143,14 +143,14 @@ class UrdfRobotParser(RobotParser):
             return link_params
         body_params = {}
         body_params["link_name"] = link_name
-        mass = 0.01  # small mass
+        mass = 0.0  # a link with no inertial weighs nothing; its inertia scales to 0 with it
         com = np.array([0.0, 0.0, 0.0])
         inertia = np.array([1e-2, 1e-2, 1e-2, 0.0, 0.0, 0.0]) * mass
         # read link mass, com, and inertia:
         link_data = self._robot.link_map[link_name]
         if link_data.inertial is not None:
             mass_value = link_data.inertial.mass
-            mass = mass_value if mass_value > 0.0 else 0.01
+            mass = max(mass_value, 0.0)
             com_pose_matrix = link_data.inertial.origin
             if com_pose_matrix is None:
                 com_pose_matrix = np.eye(4)
