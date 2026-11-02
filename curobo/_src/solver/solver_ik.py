@@ -405,6 +405,7 @@ class IKSolver:
 
         self._update_rollout_params(goal_buffer, include_auxiliary_rollout=False)
 
+        seed_success = None
         if self.config.exit_early or not run_optimizer:
             metrics_result = self.metrics_rollout.compute_metrics_from_action(coord_position_seed)
             ik_result = self._get_result(
@@ -415,11 +416,26 @@ class IKSolver:
                 self._compute_solution_velocity(ik_result, current_state, return_seeds)
                 ik_result.total_time = total_timer.stop()
                 return ik_result
+            # cuTAMP fork: the optimizer has none of the seed-IK CoM residual, so with that
+            # residual on it replaces only the problems the seed IK failed. Column 0 is a
+            # problem's best seed: a success iff any of its seeds is (_get_result ranks failures
+            # last).
+            if self.config.seed_com_support_weight > 0.0:
+                seed_success = ik_result.success[:, 0].clone()
+                seed_solutions = coord_position_seed.clone()
 
         opt_timer = CudaEventTimer().start()
         self.optimizer.reinitialize(coord_position_seed)
         opt_result = self.optimizer.optimize(coord_position_seed)
         opt_time = opt_timer.stop()
+
+        if seed_success is not None:
+            batch = seed_success.shape[0]
+            opt_result = torch.where(
+                seed_success.view(batch, 1, 1),
+                seed_solutions.view(batch, num_seeds, -1),
+                opt_result.view(batch, num_seeds, -1),
+            ).view_as(opt_result)
 
         metrics_result = self.metrics_rollout.compute_metrics_from_action(opt_result)
 
