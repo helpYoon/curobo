@@ -419,7 +419,9 @@ class IKSolver:
             # cuTAMP fork: the optimizer has none of the seed-IK CoM residual, so with that
             # residual on it replaces only the problems the seed IK failed. Column 0 is a
             # problem's best seed: a success iff any of its seeds is (_get_result ranks failures
-            # last).
+            # last). A solved problem keeps all its seeds, failed ones too, so return_seeds > 1
+            # can return seeds the optimizer would have fixed. With exit_early off nothing is
+            # kept: the optimizer replaces every problem.
             if self.config.seed_com_support_weight > 0.0:
                 seed_success = ik_result.success[:, 0].clone()
                 seed_solutions = coord_position_seed.clone()
