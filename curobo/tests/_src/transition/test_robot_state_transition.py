@@ -1346,3 +1346,98 @@ class TestRobotStateTransitionJointNamesLimits:
 
         assert transition.joint_limits is not None
         assert transition.joint_limits.position is not None
+
+
+# ============================================================================
+# Test Classes - External Wrench Hook
+# ============================================================================
+
+
+@pytest.fixture
+def franka_dynamics_transition(franka_robot_cfg_dict, time_traj_cfg, cuda_device_cfg, state_filter_cfg):
+    """Teleport-mode Franka transition with dynamics loaded."""
+    cfg_dict = franka_robot_cfg_dict.copy()
+    cfg_dict["load_dynamics"] = True
+    return RobotStateTransition(
+        RobotStateTransitionCfg(
+            robot_config=RobotCfg.create({"robot_cfg": cfg_dict}, cuda_device_cfg),
+            dt_traj_params=time_traj_cfg,
+            device_cfg=cuda_device_cfg,
+            control_space=ControlSpace.POSITION,
+            teleport_mode=True,
+            batch_size=2,
+            horizon=10,
+            state_filter_cfg=state_filter_cfg,
+        )
+    )
+
+
+def _random_state(transition, batch=2, horizon=3, seed=0):
+    """Seeded random positions, velocities and accelerations in [-1, 1]."""
+    tensor_args = transition.device_cfg.as_torch_dict()
+    g = torch.Generator(device=tensor_args["device"]).manual_seed(seed)
+    shape = (batch, horizon, transition.num_dof)
+    state = JointState.zeros(shape, transition.device_cfg)
+    state.position, state.velocity, state.acceleration = (
+        torch.rand(shape, generator=g, **tensor_args) * 2 - 1 for _ in range(3)
+    )
+    return state
+
+
+def _hand_wrench(transition, batch=2, horizon=3):
+    """5 N along panda_hand's z, in its frame; nothing on the other links."""
+    kc = transition.robot_dynamics.kinematics_config
+    f = torch.zeros((batch, horizon, kc.num_links, 6), **transition.device_cfg.as_torch_dict())
+    f[..., kc.link_name_to_idx_map["panda_hand"], 3:] = f.new_tensor([0.0, 0.0, 5.0])
+    return f
+
+
+class TestExternalWrenchHook:
+    """set_external_wrench_fn: an RNEA pass with nothing touching the robot, the hook's wrench from
+    it, then a second pass with that wrench. Dynamics returns a shared buffer, which the next call
+    overwrites, so every torque is cloned before the next RNEA call."""
+
+    def test_without_a_hook_one_pass(self, franka_dynamics_transition):
+        t = franka_dynamics_transition
+        state = _random_state(t)
+        tau = t.compute_augmented_state(state).joint_torque.clone()
+        assert torch.allclose(tau, t.robot_dynamics.compute_inverse_dynamics(state), atol=1e-5)
+
+    def test_hook_wrench_feeds_the_second_pass(self, franka_dynamics_transition):
+        t = franka_dynamics_transition
+        state = _random_state(t)
+        f = _hand_wrench(t)
+        seen = []
+
+        def fn(state_seq, kin_state, tau_free):
+            seen.append(tau_free.clone())
+            return f
+
+        t.set_external_wrench_fn(fn)
+        tau = t.compute_augmented_state(state).joint_torque.clone()
+        free = t.robot_dynamics.compute_inverse_dynamics(state).clone()
+        pushed = t.robot_dynamics.compute_inverse_dynamics(state, f_ext=f).clone()
+        assert len(seen) == 1 and torch.allclose(seen[0], free, atol=1e-5)
+        assert torch.allclose(tau, pushed, atol=1e-5)
+        assert not torch.allclose(tau, free, atol=1e-3)
+
+    def test_hook_gradient_holds_the_wrench_fixed(self, franka_dynamics_transition):
+        # The hook's wrench moves with the state; the second pass's gradient must treat it as fixed.
+        t = franka_dynamics_transition
+        f = _hand_wrench(t)
+        t.set_external_wrench_fn(lambda s, k, tau: f * (1 + s.position.sum()))
+        state = _random_state(t)
+        state.position.requires_grad_(True)
+        (t.compute_augmented_state(state).joint_torque ** 2).sum().backward()
+        grad = state.position.grad.clone()
+
+        fresh = _random_state(t)  # the same seed, so the same state
+        fresh.position.requires_grad_(True)
+        f_fixed = (f * (1 + fresh.position.sum())).detach()
+        (t.robot_dynamics.compute_inverse_dynamics(fresh, f_ext=f_fixed) ** 2).sum().backward()
+        assert torch.allclose(grad, fresh.position.grad, atol=1e-4)
+
+    def test_hook_needs_dynamics(self, teleport_transition_cfg):
+        t = RobotStateTransition(teleport_transition_cfg)
+        with pytest.raises(ValueError):
+            t.set_external_wrench_fn(lambda s, k, tau: None)

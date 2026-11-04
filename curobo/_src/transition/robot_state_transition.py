@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 # Standard Library
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Callable, Optional, Union
 
 # Third Party
 import torch
@@ -33,6 +33,7 @@ from curobo._src.util.state_filter import JointStateFilter
 
 if TYPE_CHECKING:
     # CuRobo
+    from curobo._src.robot.kinematics.kinematics_state import KinematicsState
     from curobo._src.transition.robot_state_transition_cfg import (
         RobotStateTransitionCfg,
     )
@@ -64,6 +65,7 @@ class RobotStateTransition:
             self.robot_dynamics = self._create_dynamics()
             self._transition_streams["robot_dynamics"], self._transition_events["robot_dynamics"] = create_cuda_stream_pair(self.device_cfg.device)
             self._transition_streams["kinematics"], self._transition_events["kinematics"] = create_cuda_stream_pair(self.device_cfg.device)
+        self._external_wrench_fn = None
 
 
         self._use_clique = True
@@ -372,6 +374,22 @@ class RobotStateTransition:
         state = self.compute_augmented_state(state_seq, idxs_env=idxs_env)
         return state
 
+    def set_external_wrench_fn(
+        self,
+        fn: Optional[Callable[[JointState, KinematicsState, torch.Tensor], torch.Tensor]],
+    ) -> None:
+        """Set what touches the robot, for inverse dynamics.
+
+        With ``fn`` set, every inverse-dynamics call runs two passes: one with nothing touching the
+        robot, then one with ``f_ext = fn(state_seq, kinematics_state, tau_free)``, where
+        ``tau_free`` is the first pass's ``[batch, horizon, dof]`` torque. ``f_ext`` is
+        ``[batch, horizon, n_links, 6]``: [torque, force] on each link, in its frame. The second
+        pass's torque is the state's ``joint_torque``. ``None`` restores the single pass.
+        """
+        if fn is not None and self.robot_dynamics is None:
+            log_and_raise("set_external_wrench_fn needs dynamics: set load_dynamics in the robot config")
+        self._external_wrench_fn = fn
+
     def compute_augmented_state(
         self, state_seq: JointState, idxs_env: Optional[torch.Tensor] = None,
     ) -> RobotState:
@@ -385,8 +403,16 @@ class RobotStateTransition:
         num_traj_points = state_seq.shape[1]
 
         if self.compute_inverse_dynamics:
+            wrench_fn = self._external_wrench_fn
             with cuda_stream_context("robot_dynamics", self._transition_streams, self._transition_events, self.device_cfg.device):
-                joint_torque = self.robot_dynamics.compute_inverse_dynamics(state_seq)
+                if wrench_fn is None:
+                    joint_torque = self.robot_dynamics.compute_inverse_dynamics(state_seq)
+                else:
+                    # The first pass runs without gradients: Dynamics keeps one forward cache for its
+                    # backward, so the second pass's backward finds its own forward there, and treats
+                    # f_ext as fixed. Clone: Dynamics returns a shared buffer.
+                    with torch.no_grad():
+                        tau_free = self.robot_dynamics.compute_inverse_dynamics(state_seq).clone()
 
             with cuda_stream_context("kinematics", self._transition_streams, self._transition_events, self.device_cfg.device):
                 cuda_robot_model_state = self.robot_model.compute_kinematics(
@@ -394,6 +420,10 @@ class RobotStateTransition:
                 )
 
             synchronize_cuda_streams(self._transition_events, self.device_cfg.device)
+            if wrench_fn is not None:
+                with torch.no_grad():
+                    f_ext = wrench_fn(state_seq, cuda_robot_model_state, tau_free)
+                joint_torque = self.robot_dynamics.compute_inverse_dynamics(state_seq, f_ext=f_ext)
 
         else:
             cuda_robot_model_state = self.robot_model.compute_kinematics(
