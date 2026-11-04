@@ -157,21 +157,14 @@ class UrdfRobotParser(RobotParser):
             # The CoM is the origin's translation in the link frame; the origin's rotation only
             # orients the inertia tensor. (Composing the two gave R p + p, so 2p for rpy 0.)
             com = com_pose_matrix[:3, 3]
-
+            # The tensor is about the CoM, in the inertial frame; the origin's rotation turns it into
+            # the link frame (export_to_urdf writes it back with an unrotated origin).
             inertia_matrix = link_data.inertial.inertia
-            inertia_array = np.array(
-                [
-                    inertia_matrix[0, 0],
-                    inertia_matrix[1, 1],
-                    inertia_matrix[2, 2],
-                    inertia_matrix[0, 1],
-                    inertia_matrix[0, 2],
-                    inertia_matrix[1, 2],
-                ]
-            )
-            # if all are zero:
-            if np.all(inertia_array == 0.0):
-                inertia_array = np.array([1e-4, 1e-4, 1e-4, 0.0, 0.0, 0.0]) * mass
+            if inertia_matrix is None or not np.any(inertia_matrix):
+                inertia_matrix = 1e-4 * mass * np.eye(3)
+            r = com_pose_matrix[:3, :3]
+            inertia_matrix = r @ inertia_matrix @ r.T
+            inertia = inertia_matrix[[0, 1, 2, 0, 0, 1], [0, 1, 2, 1, 2, 2]]
             if com.shape != (3,):
                 log_and_raise(f"com read from urdf shape does not match: {com.shape} != (3,)")
             if inertia.shape != (6,):
